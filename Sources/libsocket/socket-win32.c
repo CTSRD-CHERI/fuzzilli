@@ -142,6 +142,22 @@ ssize_t socket_recv(socket_t sock, uint8_t *buffer, size_t length) {
     return recv(sock, (char *)buffer, length, 0);
 }
 
+#if defined(REMOTE_EXECUTOR)
+ssize_t socket_recv_all(socket_t fd, uint8_t* data, size_t length) {
+    ssize_t total = 0;
+    while (total < length) {
+        ssize_t n = recv(fd, data + total, length - total, 0);
+        if (n <= 0) return -1;
+        total += n;
+    }
+    return total;
+}
+
+ssize_t socket_send_all(socket_t fd, const uint8_t* data, size_t length) {
+    return socket_send(fd, data, length);
+}
+#endif
+
 int socket_shutdown(socket_t socket) {
     return shutdown(socket, SD_BOTH);
 }

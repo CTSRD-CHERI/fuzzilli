@@ -20,6 +20,10 @@
 #if defined(_WIN32)
 #include <WinSock2.h>
 #endif
+#if defined(__FreeBSD__)
+#include <sys/socket.h>
+#include <netinet/in.h>
+#endif
 
 #if defined(_WIN32)
 typedef SOCKET socket_t;
@@ -46,6 +50,11 @@ socket_t socket_connect(const char* address, uint16_t port);
 
 ssize_t socket_send(socket_t socket, const uint8_t* data, size_t length);
 ssize_t socket_recv(socket_t socket, uint8_t* buffer, size_t length);
+
+#if defined(REMOTE_EXECUTOR)
+ssize_t socket_send_all(socket_t fd, const uint8_t* data, size_t length);
+ssize_t socket_recv_all(socket_t fd, uint8_t* data, size_t length);
+#endif
 
 int socket_shutdown(socket_t socket);
 int socket_close(socket_t socket);

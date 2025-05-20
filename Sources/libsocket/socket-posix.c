@@ -66,10 +66,12 @@ socket_t socket_accept(socket_t fd) {
 #endif
     
     int flags = fcntl(client_fd, F_GETFL, 0);
+#if !defined(REMOTE_EXECUTOR)
     if (fcntl(client_fd, F_SETFL, flags | O_NONBLOCK) == -1) {
         close(client_fd);
         return INVALID_SOCKET;
     }
+#endif
     if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
         close(fd);
         return INVALID_SOCKET;
@@ -121,10 +123,12 @@ socket_t socket_connect(const char* address, uint16_t port) {
 #endif
     
     int flags = fcntl(fd, F_GETFL, 0);
+#if !defined(REMOTE_EXECUTOR)
     if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
         close(fd);
         return INVALID_SOCKET;
     }
+#endif
     if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
         close(fd);
         return INVALID_SOCKET;
@@ -157,6 +161,28 @@ ssize_t socket_send(socket_t fd, const uint8_t* data, size_t length) {
 ssize_t socket_recv(socket_t fd, uint8_t* data, size_t length) {
     return read(fd, data, length);
 }
+
+#if defined(REMOTE_EXECUTOR)
+// needed for blocking behavior
+ssize_t socket_recv_all(socket_t fd, uint8_t* data, size_t length) {
+    ssize_t total = 0;
+    while (total < length) {
+#ifdef __APPLE__
+        ssize_t n = recv(fd, data + total, length - total, 0);
+#else
+        ssize_t n = recv(fd, data + total, length - total, MSG_NOSIGNAL);
+#endif
+        if (n <= 0) return -1;
+        total += n;
+    }
+    return total;
+}
+
+ssize_t socket_send_all(socket_t fd, const uint8_t* data, size_t length) {
+    // identical to socket_send
+    return socket_send(fd, data, length);
+}
+#endif
 
 int socket_shutdown(socket_t socket) {
     return shutdown(socket, SHUT_RDWR);
