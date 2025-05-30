@@ -12,15 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "libsocket_remote.h"
-#include "remote-executor-protocol.h"
+#if !defined(_WIN32)
 
-#include <stdint.h>
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#include "libreprl_remote.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include <arpa/inet.h>
+
+#if defined(__FreeBSD__)
+#include <sys/endian.h>
+#include <netinet/in.h>
+#endif
 
 static uint16_t send_create_context(socket_t fd) {
     // send
@@ -30,7 +38,7 @@ static uint16_t send_create_context(socket_t fd) {
     cmd.hdr.opcode = REPRL_CREATE_CONTEXT;
     cmd.hdr.length = htonl(0);
     if (socket_send_all_remote(fd, (const uint8_t*)&cmd, sizeof(cmd)) != sizeof(cmd)) {
-        perror("send_create_context: send failed");
+        fprintf(stderr, "send_create_context: send failed\n");
         return UINT16_MAX;
     }
 
@@ -40,38 +48,27 @@ static uint16_t send_create_context(socket_t fd) {
         reprl_create_context_rp payload;
     } resp;
     if (socket_recv_all_remote(fd, (uint8_t*)&resp.hdr, sizeof(resp.hdr)) != sizeof(resp.hdr)) {
-        perror("send_create_context: recv hdr failed");
+        fprintf(stderr, "send_create_context: recv hdr failed\n");
         return UINT16_MAX;
     }
     if (resp.hdr.opcode != (REPRL_CREATE_CONTEXT | RESP_MASK)) {
-        fprintf(stderr, "Unexpected response opcode: 0x%02x\n", resp.hdr.opcode);
+        fprintf(stderr, "send_create_context: unexpected response opcode: 0x%02x\n", resp.hdr.opcode);
         return UINT16_MAX;
     }
     uint32_t payload_len = ntohl(resp.hdr.length);
     if (payload_len != sizeof(reprl_create_context_rp)) {
-        fprintf(stderr, "Invalid payload size: %u\n", payload_len);
+        fprintf(stderr, "send_create_context: invalid payload size: %u\n", payload_len);
         return UINT16_MAX;
     }
     if (socket_recv_all_remote(fd, (uint8_t*)&resp.payload, sizeof(resp.payload)) != sizeof(resp.payload)) {
-        perror("send_create_context: recv payload failed");
+        fprintf(stderr, "send_create_context: recv payload failed\n");
         return UINT16_MAX;
     }
     return ntohs(resp.payload.ctx_handle);
 }
 
-static void send_destroy_context(socket_t fd, uint16_t handle) {
-    struct {
-        cmd_pkt_t hdr;
-        reprl_destroy_context_cp payload;
-    } cmd;
-    cmd.hdr.opcode = REPRL_DESTROY_CONTEXT;
-    cmd.hdr.length = htonl(sizeof(cmd.payload));
-    cmd.payload.ctx_handle = htons(handle);
-    if (socket_send_all_remote(fd, (uint8_t*)&cmd, sizeof(cmd)) != sizeof(cmd)) {
-        perror("send_destroy_context: send failed");
-        return;
-    }
-    // no response expected
+uint16_t reprl_create_context_remote(socket_t fd) {
+    return send_create_context(fd);
 }
 
 static char* argv_to_whitespace_string(const char** argv) {
@@ -130,7 +127,7 @@ static char* envp_to_semicolon_string(const char** envp) {
     return result;
 }
 
-uint8_t send_init_context(socket_t fd, uint16_t handle, const char **argv, const char **envp, int capture_stdout, int capture_stderr) {
+static uint8_t send_init_context(socket_t fd, uint16_t handle, const char **argv, const char **envp, int capture_stdout, int capture_stderr) {
     struct {
         cmd_pkt_t hdr;
         reprl_init_context_cp payload;
@@ -142,7 +139,7 @@ uint8_t send_init_context(socket_t fd, uint16_t handle, const char **argv, const
     // encoding argv to a single string
     char* joined_argv = argv_to_whitespace_string(argv);
     if (!joined_argv) {
-        perror("argv_to_whitespace_string failed");
+        fprintf(stderr, "argv_to_whitespace_string failed\n");
         return -1;
     }
     strncpy(cmd.payload.argv, joined_argv, sizeof(cmd.payload.argv) - 1);
@@ -152,7 +149,7 @@ uint8_t send_init_context(socket_t fd, uint16_t handle, const char **argv, const
     // encoding envp to a single string
     char* joined_envp = envp_to_semicolon_string(envp);
     if (!joined_envp) {
-        perror("envp_to_semicolon_string failed");
+        fprintf(stderr, "envp_to_semicolon_string failed\n");
         return -1;
     }
     strncpy(cmd.payload.envp, joined_envp, sizeof(cmd.payload.envp) - 1);
@@ -162,7 +159,7 @@ uint8_t send_init_context(socket_t fd, uint16_t handle, const char **argv, const
     cmd.payload.capture_stdout = capture_stdout;
     cmd.payload.capture_stderr = capture_stderr;
     if (socket_send_all_remote(fd, (const uint8_t*)&cmd, sizeof(cmd)) != sizeof(cmd)) {
-        perror("send_init_context: send failed");
+        fprintf(stderr, "send_init_context: send failed\n");
         return -1;
     }
 
@@ -172,31 +169,54 @@ uint8_t send_init_context(socket_t fd, uint16_t handle, const char **argv, const
         reprl_init_context_rp payload;
     } resp;
     if (socket_recv_all_remote(fd, (uint8_t*)&resp.hdr, sizeof(resp.hdr)) != sizeof(resp.hdr)) {
-        perror("send_init_context: recv hdr failed");
+        fprintf(stderr, "send_init_context: recv hdr failed\n");
         return -1;
     }
     if (resp.hdr.opcode != (REPRL_INIT_CONTEXT | RESP_MASK)) {
-        fprintf(stderr, "Unexpected response opcode: 0x%02x\n", resp.hdr.opcode);
+        fprintf(stderr, "send_init_context: unexpected response opcode: 0x%02x\n", resp.hdr.opcode);
         return -1;
     }
     uint32_t payload_len = ntohl(resp.hdr.length);
     if (payload_len != sizeof(reprl_init_context_rp)) {
-        fprintf(stderr, "Invalid payload size: %u\n", payload_len);
+        fprintf(stderr, "send_init_context: invalid payload size: %u\n", payload_len);
         return -1;
     }
     if (socket_recv_all_remote(fd, (uint8_t*)&resp.payload, sizeof(resp.payload)) != sizeof(resp.payload)) {
-        perror("send_init_context: recv payload failed");
+        fprintf(stderr, "send_init_context: recv payload failed\n");
         return -1;
     }
-    return resp.payload.status;
+    return resp.payload.status == 0 ? 0 : -1;
 }
 
-static uint32_t send_execute(socket_t fd, uint32_t handle, char *script, uint64_t script_size, uint64_t timeout, uint8_t fresh_instance, uint64_t *execution_time) {
+int reprl_initialize_context_remote(socket_t fd, uint16_t handle, const char** argv, const char** envp, int capture_stdout, int capture_stderr) {
+    return send_init_context(fd, handle, argv, envp, capture_stdout, capture_stderr);
+}
+
+static void send_destroy_context(socket_t fd, uint16_t handle) {
+    struct {
+        cmd_pkt_t hdr;
+        reprl_destroy_context_cp payload;
+    } cmd;
+    cmd.hdr.opcode = REPRL_DESTROY_CONTEXT;
+    cmd.hdr.length = htonl(sizeof(cmd.payload));
+    cmd.payload.ctx_handle = htons(handle);
+    if (socket_send_all_remote(fd, (uint8_t*)&cmd, sizeof(cmd)) != sizeof(cmd)) {
+        fprintf(stderr, "send_destroy_context: send failed\n");
+        return;
+    }
+    // no response expected
+}
+
+void reprl_destroy_context_remote(socket_t fd, uint16_t handle) {
+    send_destroy_context(fd, handle);
+}
+
+static uint32_t send_execute(socket_t fd, uint32_t handle, const char *script, uint64_t script_size, uint64_t timeout, uint8_t fresh_instance, uint64_t *execution_time) {
     uint32_t data_size = script_size + 1; // with null byte
     uint32_t total_size = data_size + sizeof(cmd_pkt_t) + sizeof(reprl_execute_cp);
     uint8_t *packet = malloc(total_size);
     if (!packet) {
-        perror("malloc failed");
+        perror("malloc");
         return -1;
     }
     cmd_pkt_t *hdr = (cmd_pkt_t *)packet;
@@ -210,7 +230,7 @@ static uint32_t send_execute(socket_t fd, uint32_t handle, char *script, uint64_
     memcpy(payload->script, script, script_size);
     payload->script[script_size] = '\0';
     if (socket_send_all_remote(fd, packet, total_size) != total_size) {
-        perror("send_execute: send failed");
+        fprintf(stderr, "send_execute: send failed\n");
         return -1;
     }
     free(packet);
@@ -221,25 +241,29 @@ static uint32_t send_execute(socket_t fd, uint32_t handle, char *script, uint64_
         reprl_execute_rp payload;
     } resp;
     if (socket_recv_all_remote(fd, (uint8_t*)&resp.hdr, sizeof(resp.hdr)) != sizeof(resp.hdr)) {
-        perror("send_execute: recv hdr failed");
+        fprintf(stderr, "send_execute: recv hdr failed\n");
         return -1;
     }
     if (resp.hdr.opcode != (REPRL_EXECUTE | RESP_MASK)) {
-        fprintf(stderr, "Unexpected response opcode: 0x%02x\n", resp.hdr.opcode);
+        fprintf(stderr, "send_execute: unexpected response opcode: 0x%02x\n", resp.hdr.opcode);
         return -1;
     }
     uint32_t payload_len = ntohl(resp.hdr.length);
     if (payload_len != sizeof(reprl_execute_rp)) {
-        fprintf(stderr, "Invalid payload size: %u\n", payload_len);
+        fprintf(stderr, "send_execute: invalid payload size: %u\n", payload_len);
         return -1;
     }
     if (socket_recv_all_remote(fd, (uint8_t*)&resp.payload, sizeof(resp.payload)) != sizeof(resp.payload)) {
-        perror("send_init_context: recv payload failed");
+        fprintf(stderr, "send_init_context: recv payload failed\n");
         return -1;
     }
     // XXX this is how fuzzilli reports back the execution time
-    *execution_time = resp.payload.execution_time;
-    return resp.payload.status;
+    *execution_time = ntohll(resp.payload.execution_time);
+    return ntohl(resp.payload.status);
+}
+
+int reprl_execute_remote(socket_t fd, uint16_t handle, const char* script, uint64_t script_size, uint64_t timeout, uint64_t* execution_time, int fresh_instance) {
+    return send_execute(fd, handle, script, script_size, timeout, fresh_instance, execution_time);
 }
 
 static char* send_fetch_fuzzout(socket_t fd, uint32_t handle) {
@@ -251,24 +275,24 @@ static char* send_fetch_fuzzout(socket_t fd, uint32_t handle) {
     cmd.hdr.length = htonl(sizeof(reprl_fetch_fuzzout_cp));
     cmd.payload.ctx_handle = htons(handle);
     if (socket_send_all_remote(fd, (const uint8_t*)&cmd, sizeof(cmd)) != sizeof(cmd)) {
-        perror("send_fetch_fuzzout: send failed");
+        fprintf(stderr, "send_fetch_fuzzout: send failed\n");
         return NULL;
     }
 
     // recv
     cmd_pkt_t resp_hdr;
     if (socket_recv_all_remote(fd, (uint8_t*)&resp_hdr, sizeof(resp_hdr)) != sizeof(resp_hdr)) {
-        perror("send_fetch_fuzzout: recv hdr failed");
+        fprintf(stderr, "send_fetch_fuzzout: recv hdr failed\n");
         return NULL;
     }
     if (resp_hdr.opcode != (REPRL_FETCH_FUZZOUT | RESP_MASK)) {
-        fprintf(stderr, "Unexpected response opcode: 0x%02x\n", resp_hdr.opcode);
+        fprintf(stderr, "send_fetch_fuzzout: unexpected response opcode: 0x%02x\n", resp_hdr.opcode);
         return NULL;
     }
     uint32_t resp_len = ntohl(resp_hdr.length);
     reprl_fetch_fuzzout_rp* resp_pkt = malloc(resp_len);
     if (socket_recv_all_remote(fd, (uint8_t*)resp_pkt, resp_len) != resp_len) {
-        fprintf(stderr, "Invalid response payload size: %u\n", resp_len);
+        fprintf(stderr, "send_fetch_fuzzout: invalid response payload size: %u\n", resp_len);
         return NULL;
     }
     uint32_t data_size = ntohl(resp_pkt->data_size);
@@ -286,24 +310,24 @@ static char* send_fetch_stdout(socket_t fd, uint32_t handle) {
     cmd.hdr.length = htonl(sizeof(reprl_fetch_stdout_cp));
     cmd.payload.ctx_handle = htons(handle);
     if (socket_send_all_remote(fd, (const uint8_t*)&cmd, sizeof(cmd)) != sizeof(cmd)) {
-        perror("send_fetch_stdout: send failed");
+        fprintf(stderr, "send_fetch_stdout: send failed\n");
         return NULL;
     }
 
     // recv
     cmd_pkt_t resp_hdr;
     if (socket_recv_all_remote(fd, (uint8_t*)&resp_hdr, sizeof(resp_hdr)) != sizeof(resp_hdr)) {
-        perror("send_fetch_stdout: recv hdr failed");
+        fprintf(stderr, "send_fetch_stdout: recv hdr failed\n");
         return NULL;
     }
     if (resp_hdr.opcode != (REPRL_FETCH_STDOUT | RESP_MASK)) {
-        fprintf(stderr, "Unexpected response opcode: 0x%02x\n", resp_hdr.opcode);
+        fprintf(stderr, "send_fetch_stdout: unexpected response opcode: 0x%02x\n", resp_hdr.opcode);
         return NULL;
     }
     uint32_t resp_len = ntohl(resp_hdr.length);
     reprl_fetch_stdout_rp* resp_pkt = malloc(resp_len);
     if (socket_recv_all_remote(fd, (uint8_t*)resp_pkt, resp_len) != resp_len) {
-        fprintf(stderr, "Invalid response payload size: %u\n", resp_len);
+        fprintf(stderr, "send_fetch_stdout: invalid response payload size: %u\n", resp_len);
         return NULL;
     }
     uint32_t data_size = ntohl(resp_pkt->data_size);
@@ -321,24 +345,24 @@ static char* send_fetch_stderr(socket_t fd, uint32_t handle) {
     cmd.hdr.length = htonl(sizeof(reprl_fetch_stderr_cp));
     cmd.payload.ctx_handle = htons(handle);
     if (socket_send_all_remote(fd, (const uint8_t*)&cmd, sizeof(cmd)) != sizeof(cmd)) {
-        perror("send_fetch_stderr: send failed");
+        fprintf(stderr, "send_fetch_stderr: send failed\n");
         return NULL;
     }
 
     // recv
     cmd_pkt_t resp_hdr;
     if (socket_recv_all_remote(fd, (uint8_t*)&resp_hdr, sizeof(resp_hdr)) != sizeof(resp_hdr)) {
-        perror("send_fetch_stderr: recv hdr failed");
+        fprintf(stderr, "send_fetch_stderr: recv hdr failed\n");
         return NULL;
     }
     if (resp_hdr.opcode != (REPRL_FETCH_STDERR | RESP_MASK)) {
-        fprintf(stderr, "Unexpected response opcode: 0x%02x\n", resp_hdr.opcode);
+        fprintf(stderr, "send_fetch_stderr: unexpected response opcode: 0x%02x\n", resp_hdr.opcode);
         return NULL;
     }
     uint32_t resp_len = ntohl(resp_hdr.length);
     reprl_fetch_stderr_rp* resp_pkt = malloc(resp_len);
     if (socket_recv_all_remote(fd, (uint8_t*)resp_pkt, resp_len) != resp_len) {
-        fprintf(stderr, "Invalid response payload size: %u\n", resp_len);
+        fprintf(stderr, "send_fetch_stderr: invalid response payload size: %u\n", resp_len);
         return NULL;
     }
     uint32_t data_size = ntohl(resp_pkt->data_size);
@@ -356,24 +380,24 @@ static char* send_get_last_error(socket_t fd, uint32_t handle) {
     cmd.hdr.length = htonl(sizeof(reprl_get_last_error_cp));
     cmd.payload.ctx_handle = htons(handle);
     if (socket_send_all_remote(fd, (const uint8_t*)&cmd, sizeof(cmd)) != sizeof(cmd)) {
-        perror("send_get_last_error: send failed");
+        fprintf(stderr, "send_get_last_error: send failed\n");
         return NULL;
     }
 
     // recv
     cmd_pkt_t resp_hdr;
     if (socket_recv_all_remote(fd, (uint8_t*)&resp_hdr, sizeof(resp_hdr)) != sizeof(resp_hdr)) {
-        perror("send_get_last_error: recv hdr failed");
+        fprintf(stderr, "send_get_last_error: recv hdr failed\n");
         return NULL;
     }
     if (resp_hdr.opcode != (REPRL_GET_LAST_ERROR | RESP_MASK)) {
-        fprintf(stderr, "Unexpected response opcode: 0x%02x\n", resp_hdr.opcode);
+        fprintf(stderr, "send_get_last_error: unexpected response opcode: 0x%02x\n", resp_hdr.opcode);
         return NULL;
     }
     uint32_t resp_len = ntohl(resp_hdr.length);
     reprl_get_last_error_rp* resp_pkt = malloc(resp_len);
     if (socket_recv_all_remote(fd, (uint8_t*)resp_pkt, resp_len) != resp_len) {
-        fprintf(stderr, "Invalid response payload size: %u\n", resp_len);
+        fprintf(stderr, "send_get_last_error: invalid response payload size: %u\n", resp_len);
         return NULL;
     }
     uint32_t data_size = ntohl(resp_pkt->data_size);
@@ -385,118 +409,20 @@ static char* send_get_last_error(socket_t fd, uint32_t handle) {
     return data;
 }
 
-static void parse_ip_port(const char *arg, char *ip, size_t ip_len, uint16_t *port) {
-    const char *colon = strchr(arg, ':');
-    if (!colon) {
-        fprintf(stderr, "Invalid format. Expected ip:port\n");
-        exit(EXIT_FAILURE);
-    }
-
-    size_t ip_part_len = colon - arg;
-    if (ip_part_len >= ip_len) {
-        fprintf(stderr, "IP too long\n");
-        exit(EXIT_FAILURE);
-    }
-
-    strncpy(ip, arg, ip_part_len);
-    ip[ip_part_len] = '\0';
-    *port = (uint16_t)atoi(colon + 1);
-    if (*port == 0) {
-        fprintf(stderr, "Invalid port\n");
-        exit(EXIT_FAILURE);
-    }
+const char* reprl_fetch_stdout_remote(socket_t fd, uint16_t handle) {
+    return send_fetch_stdout(fd, handle);
 }
 
-int main(int argc, char *argv[])
-{
-    char ip[64] = {0};
-    uint16_t port = 0;
-    const char *js_shell_path = NULL;
-    
-    if (argc < 5) {
-        fprintf(stderr, "usage: %s --connect ip:port --js-shell-path /path/to/js-shell\n", argv[0]);
-        exit(EXIT_FAILURE);
-    }
-
-    for (int i = 1; i + 1 < argc; i++) {
-        if (strcmp(argv[i], "--connect") == 0) {
-            parse_ip_port(argv[i + 1], ip, sizeof(ip), &port);
-            i++; // skip next arg
-        } else if (strcmp(argv[i], "--js-shell-path") == 0) {
-            js_shell_path = argv[i + 1];
-            i++;
-        }
-    }
-
-    if (!*ip || !port || !js_shell_path) {
-        fprintf(stderr, "Missing required arguments.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    // create context
-    socket_t fd = socket_connect_remote(ip, port);
-    uint16_t handle = send_create_context(fd);
-    printf("Handle = %u\n", handle);
-    if (handle == UINT16_MAX) {
-        printf("[x] Invalid handle\n");
-        return -1;
-    }
-
-    // init context
-    const char *jsShellArgs[] = { (char*)js_shell_path, NULL };
-    const char *jsShellEnv[] = { NULL };
-    uint8_t status = send_init_context(fd, handle, jsShellArgs, jsShellEnv, 1, 1);
-    if (status != 0) {
-        printf("[x] Init context failed\n");
-        return -1;
-    }
-
-    // execute script
-    char *script = "";
-    uint64_t script_size = strlen(script);
-    uint64_t execution_time;
-    uint32_t execution_status = send_execute(fd, handle, script, script_size, 1000000, 0, &execution_time);
-    if (execution_status == (uint32_t)-1) {
-        printf("[x] Failed execution\n");
-        return -1;
-    }
-
-    // fetch fuzzout
-    char* fuzzout = send_fetch_fuzzout(fd, handle);
-    if (fuzzout == NULL) {
-        printf("[x] Failed fetching fuzzout\n");
-        return -1;
-    }
-    printf("fuzzout: %s\n", fuzzout);
-    // fetch stdout
-    char *stdout_out = send_fetch_stdout(fd, handle);
-    if (stdout_out == NULL) {
-        printf("[x] Failed fetching stdout\n");
-        return -1;
-    }
-    printf("stdout: %s\n", stdout_out);
-
-    // fetch stderr
-    char *stderr_out = send_fetch_stderr(fd, handle);
-    if (stderr_out == NULL) {
-        printf("[x] Failed fetching stderr\n");
-        return -1;
-    }
-    printf("stderr: %s\n", stderr_out);
-
-    // get last error 
-    char *last_error = send_get_last_error(fd, handle);
-    printf("last_error: %s\n", last_error);
-
-    free(fuzzout);
-    free(stdout_out);
-    free(stderr_out);
-    free(last_error);
-
-    // destroy context
-    send_destroy_context(fd, handle);
-
-    socket_close_remote(fd);
-
-    return 0;
+const char* reprl_fetch_stderr_remote(socket_t fd, uint16_t handle) {
+    return send_fetch_stderr(fd, handle);
 }
+
+const char* reprl_fetch_fuzzout_remote(socket_t fd, uint16_t handle) {
+    return send_fetch_fuzzout(fd, handle);
+}
+
+const char* reprl_get_last_error_remote(socket_t fd, uint16_t handle) {
+    return send_get_last_error(fd, handle);
+}
+
+#endif

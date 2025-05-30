@@ -14,6 +14,8 @@
 
 import Foundation
 import libreprl
+import libreprl_remote
+import libsocket_remote
 
 /// Read-Eval-Print-Reset-Loop: a script runner that reuses the same process for multiple
 /// scripts, but resets the global state in between executions.
@@ -36,6 +38,19 @@ public class REPRL: ComponentBase, ScriptRunner {
     /// The opaque REPRL context used by the C library
     fileprivate var reprlContext: OpaquePointer? = nil
 
+    /// Whether the execution happens in a remote executor or not
+    fileprivate let remoteExecution: Bool
+
+    /// The handle to the REPRL context used by the remote C library
+    fileprivate var reprlContextHandle: UInt16 = UInt16.max
+
+    /// Remote executor host and port
+    private let remoteHostname: String
+    private let remotePort: UInt16
+
+    /// Socket connected to the remote executor
+    fileprivate var remoteSocket: libsocket_remote.socket_t = INVALID_SOCKET
+
     /// Essentially counts the number of run() invocations
     fileprivate var lastExecId = 0
 
@@ -44,9 +59,12 @@ public class REPRL: ComponentBase, ScriptRunner {
     /// future executions. This is only used if diagnostics mode is enabled.
     private var scriptBuffer = String()
 
-    public init(executable: String, processArguments: [String], processEnvironment: [String: String], maxExecsBeforeRespawn: Int) {
+    public init(executable: String, processArguments: [String], processEnvironment: [String: String], maxExecsBeforeRespawn: Int, remoteExecution: Bool, remoteHostname: String, remotePort: UInt16) {
         self.processArguments = [executable] + processArguments
         self.maxExecsBeforeRespawn = maxExecsBeforeRespawn
+        self.remoteExecution = remoteExecution
+        self.remoteHostname = remoteHostname
+        self.remotePort = remotePort
         super.init(name: "REPRL")
 
         for (key, value) in processEnvironment {
@@ -55,23 +73,47 @@ public class REPRL: ComponentBase, ScriptRunner {
     }
 
     override func initialize() {
-        reprlContext = libreprl.reprl_create_context()
-        if reprlContext == nil {
-            logger.fatal("Failed to create REPRL context")
+        if remoteExecution {
+            connect()
+        }
+
+        if remoteExecution {
+            reprlContextHandle = libreprl_remote.reprl_create_context_remote(remoteSocket)
+            if reprlContextHandle == UInt16.max {
+                logger.fatal("Failed to create REPRL context")
+            }
+        } else {
+            reprlContext = libreprl.reprl_create_context()
+            if reprlContext == nil {
+                logger.fatal("Failed to create REPRL context")
+            }
         }
 
         let argv = convertToCArray(processArguments)
         let envp = convertToCArray(env)
 
-        if reprl_initialize_context(reprlContext, argv, envp, /* capture stdout */ 1, /* capture stderr: */ 1) != 0 {
-            logger.fatal("Failed to initialize REPRL context: \(String(cString: reprl_get_last_error(reprlContext)))")
+        if remoteExecution {
+            if libreprl_remote.reprl_initialize_context_remote(remoteSocket, reprlContextHandle, argv, envp, /* capture stdout */ 1, /* capture stderr: */ 1) != 0 {
+                logger.fatal("Failed to initialize REPRL context: \(String(cString: libreprl_remote.reprl_get_last_error_remote(remoteSocket, reprlContextHandle)))")
+            }
+        } else {
+            if reprl_initialize_context(reprlContext, argv, envp, /* capture stdout */ 1, /* capture stderr: */ 1) != 0 {
+                logger.fatal("Failed to initialize REPRL context: \(String(cString: reprl_get_last_error(reprlContext)))")
+            }
         }
 
         freeCArray(argv, numElems: processArguments.count)
         freeCArray(envp, numElems: env.count)
 
-        fuzzer.registerEventListener(for: fuzzer.events.Shutdown) { _ in
-            reprl_destroy_context(self.reprlContext)
+        if remoteExecution {
+            fuzzer.registerEventListener(for: fuzzer.events.Shutdown) { _ in
+                libreprl_remote.reprl_destroy_context_remote(self.remoteSocket, self.reprlContextHandle)
+                libsocket_remote.socket_close_remote(self.remoteSocket)
+            }
+        } else {
+            fuzzer.registerEventListener(for: fuzzer.events.Shutdown) { _ in
+                reprl_destroy_context(self.reprlContext)
+            }
         }
     }
 
@@ -109,21 +151,37 @@ public class REPRL: ComponentBase, ScriptRunner {
         let timeout = UInt64(timeout) * 1000        // In microseconds
         var status: Int32 = 0
         script.withCString { ptr in
-            status = reprl_execute(reprlContext, ptr, UInt64(script.utf8.count), UInt64(timeout), &execTime, freshInstance)
+            if remoteExecution {
+                status = libreprl_remote.reprl_execute_remote(remoteSocket, reprlContextHandle, ptr, UInt64(script.utf8.count), UInt64(timeout), &execTime, freshInstance)
+            } else {
+                status = reprl_execute(reprlContext, ptr, UInt64(script.utf8.count), UInt64(timeout), &execTime, freshInstance)
+            }
             // If we fail, we retry after a short timeout and with a fresh instance. If we still fail, we give up trying
             // to execute this program. If we repeatedly fail to execute any program, we abort.
             if status < 0 {
-                logger.warning("Script execution failed: \(String(cString: reprl_get_last_error(reprlContext))). Retrying in 1 second...")
+                if remoteExecution {
+                    logger.warning("Script execution failed: \(String(cString: libreprl_remote.reprl_get_last_error_remote(remoteSocket, reprlContextHandle))). Retrying in 1 second...")
+                } else {
+                    logger.warning("Script execution failed: \(String(cString: reprl_get_last_error(reprlContext))). Retrying in 1 second...")
+                }
                 if fuzzer.config.enableDiagnostics {
                     fuzzer.dispatchEvent(fuzzer.events.DiagnosticsEvent, data: (name: "REPRLFail", content: scriptBuffer.data(using: .utf8)!))
                 }
                 Thread.sleep(forTimeInterval: 1)
-                status = reprl_execute(reprlContext, ptr, UInt64(script.utf8.count), UInt64(timeout), &execTime, 1)
+                if remoteExecution {
+                    status = libreprl_remote.reprl_execute_remote(remoteSocket, reprlContextHandle, ptr, UInt64(script.utf8.count), UInt64(timeout), &execTime, 1)
+                } else {
+                    status = reprl_execute(reprlContext, ptr, UInt64(script.utf8.count), UInt64(timeout), &execTime, 1)
+                }
             }
         }
 
         if status < 0 {
-            logger.error("Script execution failed again: \(String(cString: reprl_get_last_error(reprlContext))). Giving up")
+            if remoteExecution {
+                logger.error("Script execution failed again: \(String(cString: libreprl_remote.reprl_get_last_error_remote(remoteSocket, reprlContextHandle))). Giving up")
+            } else {
+                logger.error("Script execution failed again: \(String(cString: reprl_get_last_error(reprlContext))). Giving up")
+            }
             // If we weren't able to successfully execute a script in the last N attempts, abort now...
             recentlyFailedExecutions += 1
             if recentlyFailedExecutions >= 10 {
@@ -152,6 +210,24 @@ public class REPRL: ComponentBase, ScriptRunner {
 
         return execution
     }
+
+    private func connect() {
+        for _ in 0..<10 {
+            let fd = libsocket_remote.socket_connect_remote(remoteHostname, remotePort)
+            guard fd != INVALID_SOCKET else {
+                logger.error("Failed to connect to remote executor. Retrying in 30 seconds")
+                Thread.sleep(forTimeInterval: 30 * Seconds) // should we really sleep here?
+                continue
+            }
+
+            // XXXR3 TODO handshake for authentication
+
+            logger.info("Connected to remote executor")
+            remoteSocket = fd
+            return
+        }
+        logger.fatal("Failed to connect to remote executor")
+    }
 }
 
 class REPRLExecution: Execution {
@@ -179,7 +255,11 @@ class REPRLExecution: Execution {
     var stdout: String {
         assert(outputStreamsAreValid)
         if cachedStdout == nil {
-            cachedStdout = String(cString: reprl_fetch_stdout(reprl.reprlContext))
+            if reprl.remoteExecution {
+                cachedStdout = String(cString: libreprl_remote.reprl_fetch_stdout_remote(reprl.remoteSocket, reprl.reprlContextHandle))
+            } else {
+                cachedStdout = String(cString: reprl_fetch_stdout(reprl.reprlContext))
+            }
         }
         return cachedStdout!
     }
@@ -187,7 +267,11 @@ class REPRLExecution: Execution {
     var stderr: String {
         assert(outputStreamsAreValid)
         if cachedStderr == nil {
-            cachedStderr = String(cString: reprl_fetch_stderr(reprl.reprlContext))
+            if reprl.remoteExecution {
+                cachedStderr = String(cString: libreprl_remote.reprl_fetch_stderr_remote(reprl.remoteSocket, reprl.reprlContextHandle))
+            } else {
+                cachedStderr = String(cString: reprl_fetch_stderr(reprl.reprlContext))
+            }
         }
         return cachedStderr!
     }
@@ -195,7 +279,11 @@ class REPRLExecution: Execution {
     var fuzzout: String {
         assert(outputStreamsAreValid)
         if cachedFuzzout == nil {
-            cachedFuzzout = String(cString: reprl_fetch_fuzzout(reprl.reprlContext))
+            if reprl.remoteExecution {
+                cachedFuzzout = String(cString: libreprl_remote.reprl_fetch_fuzzout_remote(reprl.remoteSocket, reprl.reprlContextHandle))
+            } else {
+                cachedFuzzout = String(cString: reprl_fetch_fuzzout(reprl.reprlContext))
+            }
         }
         return cachedFuzzout!
     }

@@ -703,12 +703,13 @@ let v8Profile = Profile(
         ("fuzzilli('FUZZILLI_CRASH', 0)", .shouldCrash),
         // CHECK failure
         ("fuzzilli('FUZZILLI_CRASH', 1)", .shouldCrash),
+        // XXXR3: These checks are not present in v8 CHERI
         // DCHECK failure
-        ("fuzzilli('FUZZILLI_CRASH', 2)", .shouldCrash),
+        // ("fuzzilli('FUZZILLI_CRASH', 2)", .shouldCrash),
         // Wild-write
-        ("fuzzilli('FUZZILLI_CRASH', 3)", .shouldCrash),
+        // ("fuzzilli('FUZZILLI_CRASH', 3)", .shouldCrash),
         // Check that DEBUG is defined.
-        ("fuzzilli('FUZZILLI_CRASH', 8)", .shouldCrash),
+        // ("fuzzilli('FUZZILLI_CRASH', 8)", .shouldCrash),
 
         // TODO we could try to check that OOM crashes are ignored here ( with.shouldNotCrash).
     ],

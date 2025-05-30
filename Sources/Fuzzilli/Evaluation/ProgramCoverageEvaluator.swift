@@ -14,6 +14,8 @@
 
 import Foundation
 import libcoverage
+import libcoverage_remote
+import libsocket_remote
 
 /// Represents a set of newly discovered CFG edges in the target program.
 public class CovEdgeSet: ProgramAspects {
@@ -91,26 +93,60 @@ public class ProgramCoverageEvaluator: ComponentBase, ProgramEvaluator {
     /// Context for the C library.
     private var context = libcoverage.cov_context()
 
-    public init(runner: ScriptRunner) {
+    /// The handle to the REPRL context used by the remote C library
+    private var coverageContextHandle: UInt16 = UInt16.max
+
+    /// Whether the execution happens in a remote executor or not
+    private let remoteExecution: Bool
+
+    /// Remote executor host and port
+    private let remoteHostname: String
+    private let remotePort: UInt16
+
+    /// Socket connected to the remote executor
+    private var remoteSocket: libsocket_remote.socket_t = INVALID_SOCKET
+
+
+    public init(runner: ScriptRunner, remoteExecution: Bool, remoteHostname: String, remotePort: UInt16) {
         // In order to keep clean abstractions, any corpus scheduler requiring edge counting
         // needs to call EnableEdgeTracking(), via downcasting of ProgramEvaluator
         self.shouldTrackEdgeCounts = false
+        self.remoteExecution = remoteExecution
+        self.remoteHostname = remoteHostname
+        self.remotePort = remotePort
 
         super.init(name: "Coverage")
 
         let id = ProgramCoverageEvaluator.instances
         ProgramCoverageEvaluator.instances += 1
 
-        context.id = Int32(id)
-        guard libcoverage.cov_initialize(&context) == 0 else {
-            fatalError("Could not initialize libcoverage")
+        if remoteExecution {
+            connect()
         }
+        context.id = Int32(id)
 #if os(Windows)
-        runner.setEnvironmentVariable("SHM_ID", to: "shm_id_\(GetCurrentProcessId())_\(id)")
+        let pid = GetCurrentProcessId()
 #else
-        runner.setEnvironmentVariable("SHM_ID", to: "shm_id_\(getpid())_\(id)")
+        let pid = getpid()
 #endif
+        if remoteExecution {
+            coverageContextHandle = libcoverage_remote.cov_create_context_remote(remoteSocket)
+            if coverageContextHandle == UInt16.max {
+                fatalError("[REMOTE] Could not create context")
+            }
+            guard libcoverage_remote.cov_initialize_remote(remoteSocket, coverageContextHandle, &context, pid) == 0 else {
+                fatalError("Could not initialize libcoverage")
+            }
+        } else {
+            guard libcoverage.cov_initialize(&context) == 0 else {
+                fatalError("Could not initialize libcoverage")
+            }
+        }
+        runner.setEnvironmentVariable("SHM_ID", to: "/shm_id_\(pid)_\(id)")
+    }
 
+    deinit {
+        libsocket_remote.socket_close_remote(remoteSocket)
     }
 
     public func enableEdgeTracking() {
@@ -121,7 +157,12 @@ public class ProgramCoverageEvaluator: ComponentBase, ProgramEvaluator {
 
     public func getEdgeHitCounts() -> [UInt32] {
         var edgeCounts = libcoverage.edge_counts()
-        let result = libcoverage.cov_get_edge_counts(&context, &edgeCounts)
+        let result : Int32
+        if remoteExecution {
+            result = libcoverage_remote.cov_get_edge_counts_remote(remoteSocket, coverageContextHandle, &context, &edgeCounts)
+        } else {
+            result = libcoverage.cov_get_edge_counts(&context, &edgeCounts)
+        }
         if result == -1 {
             logger.error("Error retrifying smallest hit count edges")
             return []
@@ -140,24 +181,45 @@ public class ProgramCoverageEvaluator: ComponentBase, ProgramEvaluator {
 
     override func initialize() {
         // Must clear the shared memory bitmap before every execution
-        fuzzer.registerEventListener(for: fuzzer.events.PreExecute) { execution in
-            libcoverage.cov_clear_bitmap(&self.context)
+        if remoteExecution {
+            fuzzer.registerEventListener(for: fuzzer.events.PreExecute) { execution in
+                libcoverage_remote.cov_clear_bitmap_remote(self.remoteSocket, self.coverageContextHandle, &self.context)
+            }
+        } else {
+            fuzzer.registerEventListener(for: fuzzer.events.PreExecute) { execution in
+                libcoverage.cov_clear_bitmap(&self.context)
+            }
         }
 
         // Unlink the shared memory regions on shutdown
-        fuzzer.registerEventListener(for: fuzzer.events.Shutdown) { _ in
-            libcoverage.cov_shutdown(&self.context)
+        if remoteExecution {
+            fuzzer.registerEventListener(for: fuzzer.events.Shutdown) { _ in
+                libcoverage_remote.cov_shutdown_remote(self.remoteSocket, self.coverageContextHandle, &self.context)
+            }
+        } else {
+            fuzzer.registerEventListener(for: fuzzer.events.Shutdown) { _ in
+                libcoverage.cov_shutdown(&self.context)
+            }
         }
 
         let _ = fuzzer.execute(Program(), purpose: .startup)
-        libcoverage.cov_finish_initialization(&context, shouldTrackEdgeCounts ? 1 : 0)
+        if remoteExecution {
+            libcoverage_remote.cov_finish_initialization_remote(remoteSocket, coverageContextHandle, &context, shouldTrackEdgeCounts ? 1 : 0)
+        } else {
+            libcoverage.cov_finish_initialization(&context, shouldTrackEdgeCounts ? 1 : 0)
+        }
         logger.info("Initialized, \(context.num_edges) edges")
     }
 
     public func evaluate(_ execution: Execution) -> ProgramAspects? {
         assert(execution.outcome == .succeeded)
         var newEdgeSet = libcoverage.edge_set()
-        let result = libcoverage.cov_evaluate(&context, &newEdgeSet)
+        let result : Int32
+        if remoteExecution {
+            result = libcoverage_remote.cov_evaluate_remote(remoteSocket, coverageContextHandle, &context, &newEdgeSet)
+        } else {
+            result = libcoverage.cov_evaluate(&context, &newEdgeSet)
+        }
         guard result != -1 else {
             logger.error("Could not evaluate sample")
             return nil
@@ -173,7 +235,12 @@ public class ProgramCoverageEvaluator: ComponentBase, ProgramEvaluator {
 
     public func evaluateCrash(_ execution: Execution) -> ProgramAspects? {
         assert(execution.outcome.isCrash())
-        let result = libcoverage.cov_evaluate_crash(&context)
+        let result : Int32
+        if remoteExecution {
+            result = libcoverage_remote.cov_evaluate_crash_remote(remoteSocket, coverageContextHandle, &context)
+        } else {
+            result = libcoverage.cov_evaluate_crash(&context)
+        }
         guard result != -1 else {
             logger.error("Could not evaluate crash")
             return nil
@@ -201,7 +268,12 @@ public class ProgramCoverageEvaluator: ComponentBase, ProgramEvaluator {
             fatalError("Invalid aspects passed to hasAspects")
         }
 
-        let result = libcoverage.cov_compare_equal(&context, edgeSet.edges, edgeSet.count)
+        let result : Int32
+        if remoteExecution {
+            result = libcoverage_remote.cov_compare_equal_remote(remoteSocket, coverageContextHandle, &context, edgeSet.edges, edgeSet.count)
+        } else {
+            result = libcoverage.cov_compare_equal(&context, edgeSet.edges, edgeSet.count)
+        }
         if result == -1 {
             logger.error("Could not compare progam executions")
         }
@@ -225,8 +297,16 @@ public class ProgramCoverageEvaluator: ComponentBase, ProgramEvaluator {
         let secondEdgeSet = Set(UnsafeBufferPointer(start: secondCovEdgeSet.edges, count: Int(secondCovEdgeSet.count)))
 
         // Reset all edges that were only triggered by the 2nd execution (those only triggered by the 1st execution were already reset earlier).
-        for edge in secondEdgeSet.subtracting(firstEdgeSet) {
-            resetEdge(edge)
+        if remoteExecution {
+            let difference = secondEdgeSet.subtracting(firstEdgeSet)
+            let indices = Array(difference)
+            indices.withUnsafeBufferPointer { buffer in
+                libcoverage_remote.cov_bulk_clear_edge_data_remote(remoteSocket, coverageContextHandle, &context, buffer.baseAddress, UInt32(buffer.count))
+            }
+        } else {
+            for edge in secondEdgeSet.subtracting(firstEdgeSet) {
+                resetEdge(edge)
+            }
         }
 
         // Compute the intersection of the edges.
@@ -245,11 +325,17 @@ public class ProgramCoverageEvaluator: ComponentBase, ProgramEvaluator {
         state.append(Data(bytes: &context.num_edges, count: 4))
         state.append(Data(bytes: &context.bitmap_size, count: 4))
         state.append(Data(bytes: &context.found_edges, count: 4))
+
+        if remoteExecution {
+            libcoverage_remote.cov_get_bitmaps_remote(remoteSocket, coverageContextHandle, &context)
+        }
+
         state.append(context.virgin_bits, count: Int(context.bitmap_size))
         state.append(context.crash_bits, count: Int(context.bitmap_size))
         return state
     }
 
+    // COV_SET_CRASH_BITS, COV_SET_VIRGIN_BITS
     public func importState(_ state: Data) throws {
         assert(isInitialized)
         let headerSize = 12     // 3 x 4 bytes: num_edges, bitmap_size, found_edges. See exportState() above
@@ -272,13 +358,20 @@ public class ProgramCoverageEvaluator: ComponentBase, ProgramEvaluator {
         state.copyBytes(to: context.virgin_bits, from: start..<start + Int(bitmapSize))
         start += Int(bitmapSize)
         state.copyBytes(to: context.crash_bits, from: start..<start + Int(bitmapSize))
+        if remoteExecution {
+            libcoverage_remote.cov_set_bitmaps_remote(remoteSocket, coverageContextHandle, &context)
+        }
 
         logger.info("Imported existing coverage state with \(foundEdges) edges already discovered")
     }
 
     public func resetState() {
         resetCounts = [:]
-        libcoverage.cov_reset_state(&context)
+        if remoteExecution {
+            libcoverage_remote.cov_reset_state_remote(remoteSocket, coverageContextHandle, &context)
+        } else {
+            libcoverage.cov_reset_state(&context)
+        }
     }
 
 
@@ -286,13 +379,40 @@ public class ProgramCoverageEvaluator: ComponentBase, ProgramEvaluator {
     private func resetEdge(_ edge: UInt32) {
         resetCounts[edge] = (resetCounts[edge] ?? 0) + 1
         if resetCounts[edge]! <= maxResetCount {
-            libcoverage.cov_clear_edge_data(&context, edge)
+            if remoteExecution {
+                libcoverage_remote.cov_clear_edge_data_remote(remoteSocket, coverageContextHandle, &context, edge)
+            } else {
+                libcoverage.cov_clear_edge_data(&context, edge)
+            }
         }
     }
 
     private func resetAspects(_ aspects: CovEdgeSet) {
-        for i in 0..<Int(aspects.count) {
-            resetEdge(aspects.edges![i])
+        if remoteExecution {
+            let count = Int(aspects.count)
+            libcoverage_remote.cov_bulk_clear_edge_data_remote(remoteSocket, coverageContextHandle, &context, aspects.edges, UInt32(count))
+        } else {
+            for i in 0..<Int(aspects.count) {
+                resetEdge(aspects.edges![i])
+            }
         }
+    }
+
+    private func connect() {
+        for _ in 0..<10 {
+            let fd = libsocket_remote.socket_connect_remote(remoteHostname, remotePort)
+            guard fd != INVALID_SOCKET else {
+                logger.error("Failed to connect to remote executor. Retrying in 30 seconds")
+                Thread.sleep(forTimeInterval: 30 * Seconds) // should we really sleep here?
+                continue
+            }
+
+            // XXXR3 TODO handshake for authentication
+
+            logger.info("Connected to remote executor")
+            remoteSocket = fd
+            return
+        }
+        logger.fatal("Failed to connect to remote executor")
     }
 }

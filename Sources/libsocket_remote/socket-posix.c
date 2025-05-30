@@ -14,7 +14,7 @@
 
 #if !defined(_WIN32)
 
-#include "libsocket.h"
+#include "libsocket_remote.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -24,7 +24,7 @@
 #include <string.h>
 #include <unistd.h>
 
-socket_t socket_listen(const char* address, uint16_t port) {
+socket_t socket_listen_remote(const char* address, uint16_t port) {
     socket_t fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         return INVALID_SOCKET;
@@ -54,7 +54,7 @@ socket_t socket_listen(const char* address, uint16_t port) {
     return fd;
 }
 
-socket_t socket_accept(socket_t fd) {
+socket_t socket_accept_remote(socket_t fd) {
     socket_t client_fd = accept(fd, NULL, 0);
     if (client_fd < 0) {
         return INVALID_SOCKET;
@@ -66,10 +66,6 @@ socket_t socket_accept(socket_t fd) {
 #endif
     
     int flags = fcntl(client_fd, F_GETFL, 0);
-    if (fcntl(client_fd, F_SETFL, flags | O_NONBLOCK) == -1) {
-        close(client_fd);
-        return INVALID_SOCKET;
-    }
     if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
         close(fd);
         return INVALID_SOCKET;
@@ -78,7 +74,7 @@ socket_t socket_accept(socket_t fd) {
     return client_fd;
 }
 
-socket_t socket_connect(const char* address, uint16_t port) {
+socket_t socket_connect_remote(const char* address, uint16_t port) {
     struct addrinfo hint;
     memset(&hint, 0, sizeof(hint));
     hint.ai_family = AF_UNSPEC;
@@ -121,10 +117,6 @@ socket_t socket_connect(const char* address, uint16_t port) {
 #endif
     
     int flags = fcntl(fd, F_GETFL, 0);
-    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
-        close(fd);
-        return INVALID_SOCKET;
-    }
     if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
         close(fd);
         return INVALID_SOCKET;
@@ -133,7 +125,7 @@ socket_t socket_connect(const char* address, uint16_t port) {
     return fd;
 }
 
-ssize_t socket_send(socket_t fd, const uint8_t* data, size_t length) {
+ssize_t socket_send_remote(socket_t fd, const uint8_t* data, size_t length) {
     ssize_t remaining = length;
     while (remaining > 0) {
 #ifdef __APPLE__
@@ -154,15 +146,37 @@ ssize_t socket_send(socket_t fd, const uint8_t* data, size_t length) {
     return length;
 }
 
-ssize_t socket_recv(socket_t fd, uint8_t* data, size_t length) {
+ssize_t socket_recv_remote(socket_t fd, uint8_t* data, size_t length) {
     return read(fd, data, length);
 }
 
-int socket_shutdown(socket_t socket) {
+// needed for blocking behavior
+ssize_t socket_recv_all_remote(socket_t fd, uint8_t* data, size_t length) {
+    ssize_t total = 0;
+    while (total < length) {
+#ifdef __APPLE__
+        ssize_t n = recv(fd, data + total, length - total, 0);
+#else
+        ssize_t n = recv(fd, data + total, length - total, MSG_NOSIGNAL);
+#endif
+        if (n <= 0) {
+            return -1;
+        }
+        total += n;
+    }
+    return total;
+}
+
+ssize_t socket_send_all_remote(socket_t fd, const uint8_t* data, size_t length) {
+    // identical to socket_send
+    return socket_send_remote(fd, data, length);
+}
+
+int socket_shutdown_remote(socket_t socket) {
     return shutdown(socket, SHUT_RDWR);
 }
 
-int socket_close(socket_t fd) {
+int socket_close_remote(socket_t fd) {
     return close(fd);
 }
 

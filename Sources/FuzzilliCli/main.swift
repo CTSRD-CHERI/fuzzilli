@@ -98,6 +98,7 @@ Options:
     --tag=tag                    : Optional string tag associated with this instance which will be stored in the settings.json file as well as in crashing samples.
                                    This can for example be used to remember the target revision that is being fuzzed.
     --wasm                       : Enable Wasm CodeGenerators (see WasmCodeGenerators.swift).
+    --remoteExecutor=host:port   : Use remote execution and connect to the remote executor at this address
 
 """)
     exit(0)
@@ -111,7 +112,7 @@ func configError(_ msg: String) -> Never {
 
 let jsShellPath = args[0]
 
-if !FileManager.default.fileExists(atPath: jsShellPath) {
+if !args.has("--remoteExecutor") && !FileManager.default.fileExists(atPath: jsShellPath) {
     configError("Invalid JS shell path \"\(jsShellPath)\", file does not exist")
 }
 
@@ -155,6 +156,7 @@ let argumentRandomization = args.has("--argumentRandomization")
 let additionalArguments = args["--additionalArguments"] ?? ""
 let tag = args["--tag"]
 let enableWasm = args.has("--wasm")
+let remoteExecution = args.has("--remoteExecutor")
 
 guard numJobs >= 1 else {
     configError("Must have at least 1 job")
@@ -293,6 +295,8 @@ if staticCorpus && !(resume || isNetworkChildNode || corpusImportPath != nil) {
     configError("Static corpus requires this instance to import a corpus or to participate in distributed fuzzing as a child node")
 }
 
+var remoteExecutorAddress: (ip: String, port: UInt16) = parseAddress("--remoteExecutor")
+
 // Make it easy to detect typos etc. in command line arguments
 if args.unusedOptionals.count > 0 {
     configError("Invalid arguments: \(args.unusedOptionals)")
@@ -374,12 +378,15 @@ func loadCorpus(from dirPath: String) -> [Program] {
 // When using multiple jobs, all Fuzzilli instances should use the same arguments for the JS shell, even if
 // argument randomization is enabled. This way, their corpora are "compatible" and crashes that require
 // (a subset of) the randomly chosen flags can be reproduced on the main instance.
-let jsShellArguments = profile.processArgs(argumentRandomization) + additionalArguments.split(separator: ",").map(String.init)
+// XXXR3 TODO we have to filter the supported flags in v8 CHERI
+// let jsShellArguments = remoteExecution ? additionalArguments.split(separator: ",").map(String.init) : profile.processArgs(argumentRandomization) + additionalArguments.split(separator: ",").map(String.init)
+
+let jsShellArguments = additionalArguments.split(separator: ",").map(String.init)
 logger.info("Using the following arguments for the target engine: \(jsShellArguments)")
 
 func makeFuzzer(with configuration: Configuration) -> Fuzzer {
     // A script runner to execute JavaScript code in an instrumented JS engine.
-    let runner = REPRL(executable: jsShellPath, processArguments: jsShellArguments, processEnvironment: profile.processEnv, maxExecsBeforeRespawn: profile.maxExecsBeforeRespawn)
+    let runner = REPRL(executable: jsShellPath, processArguments: jsShellArguments, processEnvironment: profile.processEnv, maxExecsBeforeRespawn: profile.maxExecsBeforeRespawn, remoteExecution: remoteExecution, remoteHostname: remoteExecutorAddress.ip, remotePort: remoteExecutorAddress.port)
 
     /// The mutation fuzzer responsible for mutating programs from the corpus and evaluating the outcome.
     let disabledMutators = Set(profile.disabledMutators)
@@ -472,7 +479,7 @@ func makeFuzzer(with configuration: Configuration) -> Fuzzer {
                                   environment: environment)
 
     // The evaluator to score produced samples.
-    let evaluator = ProgramCoverageEvaluator(runner: runner)
+    let evaluator = ProgramCoverageEvaluator(runner: runner, remoteExecution: remoteExecution, remoteHostname: remoteExecutorAddress.ip, remotePort: remoteExecutorAddress.port)
 
     // Corpus managing interesting programs that have been found during fuzzing.
     let corpus: Corpus

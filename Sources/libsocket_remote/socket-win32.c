@@ -14,7 +14,7 @@
 
 #if defined(_WIN32)
 
-#include "libsocket.h"
+#include "libsocket_remote.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -44,7 +44,7 @@ static void __attribute__((__destructor__, __used__)) libsocket_fini(void) {
     (void)WSACleanup();
 }
 
-socket_t socket_listen(const char *address, uint16_t port) {
+socket_t socket_listen_remote(const char *address, uint16_t port) {
     socket_t sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock == INVALID_SOCKET)
         return INVALID_SOCKET;
@@ -68,7 +68,7 @@ socket_t socket_listen(const char *address, uint16_t port) {
     return sock;
 }
 
-socket_t socket_accept(socket_t sock) {
+socket_t socket_accept_remote(socket_t sock) {
     socket_t client = accept(sock, NULL, NULL);
     if (client == INVALID_SOCKET)
         return INVALID_SOCKET;
@@ -82,7 +82,7 @@ socket_t socket_accept(socket_t sock) {
     return client;
 }
 
-socket_t socket_connect(const char *address, uint16_t port) {
+socket_t socket_connect_remote(const char *address, uint16_t port) {
     struct addrinfo ai;
     ZeroMemory(&ai, sizeof(ai));
     ai.ai_family = AF_UNSPEC;
@@ -124,7 +124,7 @@ socket_t socket_connect(const char *address, uint16_t port) {
     return sock;
 }
 
-ssize_t socket_send(socket_t sock, const uint8_t *data, size_t length) {
+ssize_t socket_send_remote(socket_t sock, const uint8_t *data, size_t length) {
     assert(length <= INT_MAX && "unable to send > INT_MAX bytes");
     ssize_t remaining = length;
     while (remaining) {
@@ -137,16 +137,30 @@ ssize_t socket_send(socket_t sock, const uint8_t *data, size_t length) {
     return length;
 }
 
-ssize_t socket_recv(socket_t sock, uint8_t *buffer, size_t length) {
+ssize_t socket_recv_remote(socket_t sock, uint8_t *buffer, size_t length) {
     assert(length <= INT_MAX && "unable to receive >INT_MAX bytes");
     return recv(sock, (char *)buffer, length, 0);
 }
 
-int socket_shutdown(socket_t socket) {
+ssize_t socket_recv_all_remote(socket_t fd, uint8_t* data, size_t length) {
+    ssize_t total = 0;
+    while (total < length) {
+        ssize_t n = recv(fd, data + total, length - total, 0);
+        if (n <= 0) return -1;
+        total += n;
+    }
+    return total;
+}
+
+ssize_t socket_send_all_remote(socket_t fd, const uint8_t* data, size_t length) {
+    return socket_send(fd, data, length);
+}
+
+int socket_shutdown_remote(socket_t socket) {
     return shutdown(socket, SD_BOTH);
 }
 
-int socket_close(socket_t socket) {
+int socket_close_remote(socket_t socket) {
     return closesocket(socket);
 }
 

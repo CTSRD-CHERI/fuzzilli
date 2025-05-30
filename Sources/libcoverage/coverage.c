@@ -98,7 +98,7 @@ void cov_finish_initialization(struct cov_context* context, int should_track_edg
     uint32_t num_edges = context->shmem->num_edges;
     if (num_edges == 0) {
         fprintf(stderr, "[LibCoverage] Coverage bitmap size could not be determined, is the engine instrumentation working properly?\n");
-        exit(-1);
+        exit(-1); // XXXR3 FIXME this abruptly closes the existing connections of the remote executor
     }
 
     // Llvm's sanitizer coverage ignores edges whose guard is zero, and our instrumentation stores the bitmap indices in the guard values.

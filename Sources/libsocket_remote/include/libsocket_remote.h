@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef LIBSOCKET_H
-#define LIBSOCKET_H
+#ifndef LIBSOCKET_REMOTE_H
+#define LIBSOCKET_REMOTE_H
 
 #include <stdint.h>
 #include <sys/types.h>
@@ -44,14 +44,25 @@ typedef int socket_t;
 #define INVALID_SOCKET (-1)
 #endif
 
-socket_t socket_listen(const char* address, uint16_t port);
-socket_t socket_accept(socket_t socket);
-socket_t socket_connect(const char* address, uint16_t port);
+static inline uint64_t ntohll(uint64_t value) {
+    return be64toh(value);
+}
 
-ssize_t socket_send(socket_t socket, const uint8_t* data, size_t length);
-ssize_t socket_recv(socket_t socket, uint8_t* buffer, size_t length);
+static inline uint64_t htonll(uint64_t value) {
+    return htobe64(value);
+}
 
-int socket_shutdown(socket_t socket);
-int socket_close(socket_t socket);
+socket_t socket_listen_remote(const char* address, uint16_t port);
+socket_t socket_accept_remote(socket_t socket);
+socket_t socket_connect_remote(const char* address, uint16_t port);
+
+ssize_t socket_send_remote(socket_t socket, const uint8_t* data, size_t length);
+ssize_t socket_recv_remote(socket_t socket, uint8_t* buffer, size_t length);
+
+ssize_t socket_send_all_remote(socket_t fd, const uint8_t* data, size_t length);
+ssize_t socket_recv_all_remote(socket_t fd, uint8_t* data, size_t length);
+
+int socket_shutdown_remote(socket_t socket);
+int socket_close_remote(socket_t socket);
 
 #endif

@@ -48,6 +48,11 @@ struct shmem_data {
 struct cov_context {
     // Id of this coverage context.
     int id;
+
+#ifdef REMOTE_EXECUTOR
+    // PID of this coverage context.
+    pid_t pid;
+#endif
     
     int should_track_edges;
 

@@ -31,20 +31,32 @@ let package = Package(
         .target(name: "libsocket",
                 dependencies: []),
 
+        .target(name: "libsocket_remote",
+                dependencies: []),
+
         .target(name: "libreprl",
                 dependencies: []),
+
+        .target(name: "libreprl_remote",
+                dependencies: ["libsocket_remote"]),
 
         .target(name: "libcoverage",
                 dependencies: [],
                 cSettings: [.unsafeFlags(["-O3"])],     // Using '-c release' when building uses '-O2', so '-O3' provides a performance gain
                 linkerSettings: [.linkedLibrary("rt", .when(platforms: [.linux]))]),
 
+        .target(name: "libcoverage_remote",
+                dependencies: ["libsocket_remote", "libcoverage"]),
+
         .target(name: "Fuzzilli",
                 dependencies: [
                     .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                     "libsocket",
                     "libreprl",
-                    "libcoverage"],
+                    "libcoverage",
+                    "libsocket_remote",
+                    "libreprl_remote",
+                    "libcoverage_remote"],
                 exclude: [
                     "Protobuf/operations.proto",
                     "Protobuf/program.proto",
