@@ -266,6 +266,7 @@ int reprl_execute_remote(socket_t fd, uint16_t handle, const char* script, uint6
     return send_execute(fd, handle, script, script_size, timeout, fresh_instance, execution_time);
 }
 
+#define INVALID_FUZZOUT "[remote] Couldn't retrieve fuzzout"
 static char* send_fetch_fuzzout(socket_t fd, uint32_t handle) {
     struct {
         cmd_pkt_t hdr;
@@ -276,24 +277,24 @@ static char* send_fetch_fuzzout(socket_t fd, uint32_t handle) {
     cmd.payload.ctx_handle = htons(handle);
     if (socket_send_all_remote(fd, (const uint8_t*)&cmd, sizeof(cmd)) != sizeof(cmd)) {
         fprintf(stderr, "send_fetch_fuzzout: send failed\n");
-        return NULL;
+        return INVALID_FUZZOUT;
     }
 
     // recv
     cmd_pkt_t resp_hdr;
     if (socket_recv_all_remote(fd, (uint8_t*)&resp_hdr, sizeof(resp_hdr)) != sizeof(resp_hdr)) {
         fprintf(stderr, "send_fetch_fuzzout: recv hdr failed\n");
-        return NULL;
+        return INVALID_FUZZOUT;
     }
     if (resp_hdr.opcode != (REPRL_FETCH_FUZZOUT | RESP_MASK)) {
         fprintf(stderr, "send_fetch_fuzzout: unexpected response opcode: 0x%02x\n", resp_hdr.opcode);
-        return NULL;
+        return INVALID_FUZZOUT;
     }
     uint32_t resp_len = ntohl(resp_hdr.length);
     reprl_fetch_fuzzout_rp* resp_pkt = malloc(resp_len);
     if (socket_recv_all_remote(fd, (uint8_t*)resp_pkt, resp_len) != resp_len) {
         fprintf(stderr, "send_fetch_fuzzout: invalid response payload size: %u\n", resp_len);
-        return NULL;
+        return INVALID_FUZZOUT;
     }
     uint32_t data_size = ntohl(resp_pkt->data_size);
     char* data = malloc(data_size);
@@ -301,6 +302,7 @@ static char* send_fetch_fuzzout(socket_t fd, uint32_t handle) {
     return data;
 }
 
+#define INVALID_STDOUT "[remote] Couldn't retrieve stdout"
 static char* send_fetch_stdout(socket_t fd, uint32_t handle) {
     struct {
         cmd_pkt_t hdr;
@@ -311,24 +313,24 @@ static char* send_fetch_stdout(socket_t fd, uint32_t handle) {
     cmd.payload.ctx_handle = htons(handle);
     if (socket_send_all_remote(fd, (const uint8_t*)&cmd, sizeof(cmd)) != sizeof(cmd)) {
         fprintf(stderr, "send_fetch_stdout: send failed\n");
-        return NULL;
+        return INVALID_STDOUT;
     }
 
     // recv
     cmd_pkt_t resp_hdr;
     if (socket_recv_all_remote(fd, (uint8_t*)&resp_hdr, sizeof(resp_hdr)) != sizeof(resp_hdr)) {
         fprintf(stderr, "send_fetch_stdout: recv hdr failed\n");
-        return NULL;
+        return INVALID_STDOUT;
     }
     if (resp_hdr.opcode != (REPRL_FETCH_STDOUT | RESP_MASK)) {
         fprintf(stderr, "send_fetch_stdout: unexpected response opcode: 0x%02x\n", resp_hdr.opcode);
-        return NULL;
+        return INVALID_STDOUT;
     }
     uint32_t resp_len = ntohl(resp_hdr.length);
     reprl_fetch_stdout_rp* resp_pkt = malloc(resp_len);
     if (socket_recv_all_remote(fd, (uint8_t*)resp_pkt, resp_len) != resp_len) {
         fprintf(stderr, "send_fetch_stdout: invalid response payload size: %u\n", resp_len);
-        return NULL;
+        return INVALID_STDOUT;
     }
     uint32_t data_size = ntohl(resp_pkt->data_size);
     char* data = malloc(data_size);
@@ -336,6 +338,7 @@ static char* send_fetch_stdout(socket_t fd, uint32_t handle) {
     return data;
 }
 
+#define INVALID_STDERR "[remote] Couldn't retrieve stderr"
 static char* send_fetch_stderr(socket_t fd, uint32_t handle) {
     struct {
         cmd_pkt_t hdr;
@@ -346,24 +349,24 @@ static char* send_fetch_stderr(socket_t fd, uint32_t handle) {
     cmd.payload.ctx_handle = htons(handle);
     if (socket_send_all_remote(fd, (const uint8_t*)&cmd, sizeof(cmd)) != sizeof(cmd)) {
         fprintf(stderr, "send_fetch_stderr: send failed\n");
-        return NULL;
+        return INVALID_STDERR;
     }
 
     // recv
     cmd_pkt_t resp_hdr;
     if (socket_recv_all_remote(fd, (uint8_t*)&resp_hdr, sizeof(resp_hdr)) != sizeof(resp_hdr)) {
         fprintf(stderr, "send_fetch_stderr: recv hdr failed\n");
-        return NULL;
+        return INVALID_STDERR;
     }
     if (resp_hdr.opcode != (REPRL_FETCH_STDERR | RESP_MASK)) {
         fprintf(stderr, "send_fetch_stderr: unexpected response opcode: 0x%02x\n", resp_hdr.opcode);
-        return NULL;
+        return INVALID_STDERR;
     }
     uint32_t resp_len = ntohl(resp_hdr.length);
     reprl_fetch_stderr_rp* resp_pkt = malloc(resp_len);
     if (socket_recv_all_remote(fd, (uint8_t*)resp_pkt, resp_len) != resp_len) {
         fprintf(stderr, "send_fetch_stderr: invalid response payload size: %u\n", resp_len);
-        return NULL;
+        return INVALID_STDERR;
     }
     uint32_t data_size = ntohl(resp_pkt->data_size);
     char* data = malloc(data_size);
@@ -371,6 +374,7 @@ static char* send_fetch_stderr(socket_t fd, uint32_t handle) {
     return data;
 }
 
+#define INVALID_LAST_ERROR "[remote] Couldn't retrieve last error"
 static char* send_get_last_error(socket_t fd, uint32_t handle) {
     struct {
         cmd_pkt_t hdr;
@@ -381,28 +385,28 @@ static char* send_get_last_error(socket_t fd, uint32_t handle) {
     cmd.payload.ctx_handle = htons(handle);
     if (socket_send_all_remote(fd, (const uint8_t*)&cmd, sizeof(cmd)) != sizeof(cmd)) {
         fprintf(stderr, "send_get_last_error: send failed\n");
-        return NULL;
+        return INVALID_LAST_ERROR;
     }
 
     // recv
     cmd_pkt_t resp_hdr;
     if (socket_recv_all_remote(fd, (uint8_t*)&resp_hdr, sizeof(resp_hdr)) != sizeof(resp_hdr)) {
         fprintf(stderr, "send_get_last_error: recv hdr failed\n");
-        return NULL;
+        return INVALID_LAST_ERROR;
     }
     if (resp_hdr.opcode != (REPRL_GET_LAST_ERROR | RESP_MASK)) {
         fprintf(stderr, "send_get_last_error: unexpected response opcode: 0x%02x\n", resp_hdr.opcode);
-        return NULL;
+        return INVALID_LAST_ERROR;
     }
     uint32_t resp_len = ntohl(resp_hdr.length);
     reprl_get_last_error_rp* resp_pkt = malloc(resp_len);
     if (socket_recv_all_remote(fd, (uint8_t*)resp_pkt, resp_len) != resp_len) {
         fprintf(stderr, "send_get_last_error: invalid response payload size: %u\n", resp_len);
-        return NULL;
+        return INVALID_LAST_ERROR;
     }
     uint32_t data_size = ntohl(resp_pkt->data_size);
     if (data_size == 0) {
-        return NULL;
+        return INVALID_LAST_ERROR;
     }
     char* data = malloc(data_size);
     memcpy(data, resp_pkt->data, data_size);
